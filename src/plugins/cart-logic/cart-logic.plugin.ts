@@ -3,6 +3,8 @@ import { CartRulesInterceptor } from './cart-rules.interceptor';
 import { ConfigPriceStrategy } from './config-price.strategy';
 import { ConfiguredCartResolver, shopApiExtensions } from './configured-cart.resolver';
 import { DesignProductService } from './design-product.service';
+import { StorefrontCouponService } from './storefront-coupon.service';
+import { storefrontCouponDiscount } from './storefront-discount.action';
 
 const label = (value: string) => [{ languageCode: LanguageCode.en, value }];
 
@@ -16,14 +18,17 @@ const lineField = (name: string, type: 'string' | 'text' | 'int', title: string)
  * - creates a minimal Product + Variant per design on first use
  * - stores the configuration, product details and price on each cart line (OrderLine custom fields)
  * - prices those lines with the price sent by the storefront
+ * - applies the storefront's coupon code (pricing.promotionCode) to the order, creating a coupon
+ *   Promotion on first use, so the discount and code show in the cart
  */
 @VendurePlugin({
     imports: [PluginCommonModule],
-    providers: [DesignProductService],
+    providers: [DesignProductService, StorefrontCouponService],
     shopApiExtensions: { schema: shopApiExtensions, resolvers: [ConfiguredCartResolver] },
     configuration: config => {
         config.orderOptions.orderItemPriceCalculationStrategy = new ConfigPriceStrategy();
         config.orderOptions.orderInterceptors.push(new CartRulesInterceptor());
+        config.promotionOptions.promotionActions.push(storefrontCouponDiscount);
         config.customFields.Product.push({
             name: 'designRef',
             type: 'string',
@@ -41,6 +46,8 @@ const lineField = (name: string, type: 'string' | 'text' | 'int', title: string)
             lineField('selectedOptions', 'text', 'Selected options (JSON)'),
             lineField('metadata', 'text', 'Metadata (JSON)'),
             lineField('configPrice', 'int', 'Unit price incl. VAT (minor units)'),
+            lineField('promotionCode', 'string', 'Coupon code'),
+            lineField('unitDiscount', 'int', 'Coupon discount per unit incl. VAT (minor units)'),
         );
         return config;
     },

@@ -3,6 +3,7 @@ import {
     ActiveOrderService,
     Allow,
     Ctx,
+    isGraphQlErrorResult,
     OrderService,
     Permission,
     RequestContext,
@@ -12,6 +13,7 @@ import {
 import gql from 'graphql-tag';
 import { validateConfigSku } from './constants';
 import { DesignProductService } from './design-product.service';
+import { StorefrontCouponService } from './storefront-coupon.service';
 
 export const shopApiExtensions = gql`
     input CartProductInput {
@@ -32,8 +34,14 @@ export const shopApiExtensions = gql`
         listPrice: Float
         "Optional; must match the shop currency"
         currency: String
+        "Discount per unit, including VAT. Used when listPrice is not sent."
         discountAmount: Float
+        """
+        Coupon code the discount came from. It is applied to the order (and created as a
+        Vendure promotion on first use) so the discount shows in the cart.
+        """
         promotionCode: String
+        "Name of the promotion shown in the cart, e.g. 10% off rings"
         promotionDescription: String
         "e.g. 0.19 for 19% VAT"
         taxRate: Float
@@ -83,7 +91,15 @@ interface AddToCartInput {
         designRef?: string | null;
         [key: string]: unknown;
     };
-    pricing: { price: number; currency?: string | null; [key: string]: unknown };
+    pricing: {
+        price: number;
+        listPrice?: number | null;
+        currency?: string | null;
+        discountAmount?: number | null;
+        promotionCode?: string | null;
+        promotionDescription?: string | null;
+        [key: string]: unknown;
+    };
     selectedOptions?: unknown[] | null;
     metadata?: unknown;
 }
@@ -96,6 +112,7 @@ export class ConfiguredCartResolver {
         private activeOrderService: ActiveOrderService,
         private orderService: OrderService,
         private designProductService: DesignProductService,
+        private storefrontCouponService: StorefrontCouponService,
     ) {}
 
     @Transaction()
@@ -114,18 +131,30 @@ export class ConfiguredCartResolver {
         if (pricing.currency && pricing.currency !== ctx.currencyCode) {
             throw new UserInputError(`pricing.currency ${pricing.currency} does not match the shop currency ${ctx.currencyCode}`);
         }
-        // NOTE: the price is trusted as sent by the storefront.
+        // NOTE: prices and discounts are trusted as sent by the storefront.
         const price = Math.round(pricing.price * 100);
+        const couponCode = pricing.promotionCode?.trim() || null;
+        // With a coupon code the line is priced at the list price and the coupon's promotion takes
+        // off the discount, so the cart shows the discount and code instead of a lower unit price.
+        const listPrice = couponCode
+            ? Math.round((pricing.listPrice ?? pricing.price + (pricing.discountAmount ?? 0)) * 100)
+            : price;
+        if (listPrice < price) {
+            throw new UserInputError('pricing.listPrice must not be lower than pricing.price');
+        }
 
         const variantId = await this.designProductService.findOrCreateVariantId(ctx, {
             sku,
             slug: input.slug,
             name: input.product.name,
             description: input.product.description ?? '',
-            price,
+            price: listPrice,
         });
+        if (couponCode) {
+            await this.storefrontCouponService.ensurePromotion(ctx, couponCode, pricing.promotionDescription);
+        }
         const order = await this.activeOrderService.getActiveOrder(ctx, undefined, true);
-        return this.orderService.addItemToOrder(ctx, order.id, variantId, input.quantity, {
+        const result = await this.orderService.addItemToOrder(ctx, order.id, variantId, input.quantity, {
             configSku: sku,
             slug: input.slug,
             language: input.language ?? null,
@@ -135,7 +164,18 @@ export class ConfiguredCartResolver {
             pricing: json(pricing),
             selectedOptions: json(input.selectedOptions),
             metadata: json(input.metadata),
-            configPrice: price,
+            configPrice: listPrice,
+            promotionCode: couponCode,
+            unitDiscount: listPrice - price,
         });
+        if (!couponCode || isGraphQlErrorResult(result)) {
+            return result;
+        }
+        const withCoupon = await this.orderService.applyCouponCode(ctx, result.id, couponCode);
+        if (isGraphQlErrorResult(withCoupon)) {
+            // Rolls back the whole mutation, so the line is not left in the cart without its discount.
+            throw new UserInputError(withCoupon.message);
+        }
+        return withCoupon;
     }
 }

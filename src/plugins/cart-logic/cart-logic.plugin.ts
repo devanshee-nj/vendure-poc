@@ -2,7 +2,9 @@ import { CustomFieldConfig, LanguageCode, PluginCommonModule, VendurePlugin } fr
 import { CartRulesInterceptor } from './cart-rules.interceptor';
 import { ConfigPriceStrategy } from './config-price.strategy';
 import { ConfiguredCartResolver, shopApiExtensions } from './configured-cart.resolver';
+import { DesignCategoryService } from './design-category.service';
 import { DesignProductService } from './design-product.service';
+import { hasSkuPrefix, skuPrefixPercentageDiscount } from './sku-prefix.promotion';
 import { StorefrontCouponService } from './storefront-coupon.service';
 import { storefrontCouponDiscount } from './storefront-discount.action';
 
@@ -20,15 +22,18 @@ const lineField = (name: string, type: 'string' | 'text' | 'int', title: string)
  * - prices those lines with the price sent by the storefront
  * - applies the storefront's coupon code (pricing.promotionCode) to the order, creating a coupon
  *   Promotion on first use, so the discount and code show in the cart
+ * - categorizes products with Facets (category / sub-category / ornament type) from the payload
+ * - adds "SKU starts with" promotion conditions and actions, e.g. for every CLRN349 configuration
  */
 @VendurePlugin({
     imports: [PluginCommonModule],
-    providers: [DesignProductService, StorefrontCouponService],
+    providers: [DesignProductService, DesignCategoryService, StorefrontCouponService],
     shopApiExtensions: { schema: shopApiExtensions, resolvers: [ConfiguredCartResolver] },
     configuration: config => {
         config.orderOptions.orderItemPriceCalculationStrategy = new ConfigPriceStrategy();
         config.orderOptions.orderInterceptors.push(new CartRulesInterceptor());
-        config.promotionOptions.promotionActions.push(storefrontCouponDiscount);
+        config.promotionOptions.promotionActions.push(storefrontCouponDiscount, skuPrefixPercentageDiscount);
+        config.promotionOptions.promotionConditions.push(hasSkuPrefix);
         config.customFields.Product.push({
             name: 'designRef',
             type: 'string',

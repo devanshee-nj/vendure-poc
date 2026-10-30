@@ -22,6 +22,7 @@ export const shopApiExtensions = gql`
         imageUrl: String
         "Design reference, e.g. CLRN349. Defaults to the part of the SKU before the first underscore."
         designRef: String
+        "Category, sub-category and ornament type become Facets on the product (set on first use)"
         category: String
         subCategory: String
         ornamentType: String
@@ -89,6 +90,9 @@ interface AddToCartInput {
         description?: string | null;
         imageUrl?: string | null;
         designRef?: string | null;
+        category?: string | null;
+        subCategory?: string | null;
+        ornamentType?: string | null;
         [key: string]: unknown;
     };
     pricing: {
@@ -149,6 +153,11 @@ export class ConfiguredCartResolver {
             name: input.product.name,
             description: input.product.description ?? '',
             price: listPrice,
+            categories: {
+                category: input.product.category,
+                subCategory: input.product.subCategory,
+                ornamentType: input.product.ornamentType,
+            },
         });
         if (couponCode) {
             await this.storefrontCouponService.ensurePromotion(ctx, couponCode, pricing.promotionDescription);
